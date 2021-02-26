@@ -1,0 +1,189 @@
+---
+title: "Untitled"
+author: "author"
+date: "2/25/2021"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(ALEPlot)
+library(rpart)
+```
+
+```{r}
+complete <- read.csv("combined.csv")
+```
+
+```{r}
+complete <- read.csv("complete.csv")
+```
+
+```{r}
+data <- complete %>%
+  select(-id, -name,-date) %>%
+  mutate_if(is.character, as.factor)
+```
+
+```{r}
+library(lubridate)
+data$date <- ymd(complete$date)
+data$year <- year(data$date)
+data$month <- month(data$date)
+data$week <- weekdays(data$date)
+```
+
+```{r}
+data$weekday <- if_else(data$week %in% c("Saturday", "Sunday"), 1, 0)
+data <- select(data, -date, -city, -state, -week)
+```
+
+```{r}
+gun <- c("gun", "gun and knife", "guns and explosives", "bean-bag gun", "hatchet and gun", "machete and gun")
+knife <- c("knife", "sword", "box cutter", "scissors", "chain saw", "meat cleaver", "sharp object", "glass shard", "lawn mower blade", "ax", " pick-axe", "spear", "pole and knife", "straight edge razor", "machete", "chain")
+
+w.level <- c("gun", "knife", "unarmed", "toy weapon")
+data$armed <- as.character(data$armed)
+data$weapon <- data$armed
+data$weapon[data$armed %in% gun]<- "gun"
+data$weapon[data$armed %in% knife] <-"knife"
+data$weapon[data$armed == ""] <-"unarmed"
+data$weapon[!data$armed %in%w.level] <- "other"
+sort(table(data$weapon), decreasing = T)
+data <- select(data, -armed)
+data$weapon <- as.factor(data$weapon)
+```
+
+```{r}
+data <- data[!is.na(data$percent_completed_hs),]
+newdata <- one_hot(as.data.table(data))
+write_csv(data, "data.csv")
+write_csv(newdata, "onehot.csv")
+```
+
+```{r}
+control <- rpart.control(minbucket = 1, cp = 0.0001, maxsurrogate = 0, usesurrogate = 0, xval = 5)
+tr.model <- rpart(signs_of_mental_illness ~ .,data, method = "class", control = control)
+#plot of CV r^2 vs. size
+plotcp(tr.model)  
+#printcp(tr.model)
+#prune back to optimal size, according to plot of CV 1-r^2
+tr.model2 <- prune(tr.model, cp=0.003)  #approximately the best size pruned tree
+# tr.model2$variable.importance
+tr.model2$cptable[nrow(tr.model2$cptable),]
+#printcp(tr.model2)
+par(cex=.5); plot(tr.model2, uniform=F); text(tr.model2, use.n = F)
+```
+
+```{r}
+summary.kmeans = function(fit) 
+{
+  p = ncol(fit$centers)
+  K = nrow(fit$centers)
+  n = sum(fit$size)
+  xbar = t(fit$centers)%*%fit$size/n
+  print(data.frame(
+    n=c(fit$size, n),
+    Pct=(round(c(fit$size, n)/n,2)),
+    round(rbind(fit$centers, t(xbar)), 2),
+    RMSE = round(sqrt(c(fit$withinss/(p*(fit$size-1)), fit$tot.withinss/(p*(n-K)))), 4)
+  ))
+  cat("SSE=", fit$tot.withinss, "; SSB=", fit$betweenss, "; SST=", fit$totss, "\n")
+  cat("R-Squared = ", fit$betweenss/fit$totss, "\n")
+  cat("Pseudo F = ", (fit$betweenss/(K-1))/(fit$tot.withinss/(n-K)), "\n\n");
+  invisible(list(Rsqr=fit$betweenss/fit$totss, F=(fit$betweenss/(K-1))/(fit$tot.withinss/(n-K))))
+}
+
+plot.kmeans = function(fit,boxplot=F)
+{
+  require(lattice)
+  p = ncol(fit$centers)
+  k = nrow(fit$centers)
+  plotdat = data.frame(
+    mu=as.vector(fit$centers),
+    clus=factor(rep(1:k, p)),
+    var=factor( 0:(p*k-1) %/% k, labels=colnames(fit$centers))
+  )
+  print(dotplot(var~mu|clus, data=plotdat,
+                panel=function(...){
+                  panel.dotplot(...)
+                  panel.abline(v=0, lwd=.1)
+                },
+                layout=c(k,1),
+                xlab="Cluster Mean"
+  ))
+  invisible(plotdat)
+}
+
+```
+
+# cluster
+```{r}
+library(mltools)
+library(data.table)
+
+data <- data[!is.na(data$percent_completed_hs),]
+
+data$weapon <- if_else(data$weapon == "unarmed", 0, 1)
+data$gender <- as.numeric(data$gender)-1
+data$manner_of_death <- as.numeric(data$manner_of_death)-1
+data$signs_of_mental_illness <- as.numeric(data$signs_of_mental_illness)-1
+data$threat_level <- if_else(data$threat_level == "attack", 1, 0)
+data$body_camera <- as.numeric(data$body_camera)-1
+newdata <- one_hot(as.data.table(data))
+
+newdata <- newdata[!is.na(rowSums(newdata)),]
+scale_this <- function(x) as.vector(scale(x))
+data2 <- newdata %>%
+  mutate_all(scale_this)
+
+F = double(5)
+sse = double(5)
+rsq = double(5)
+
+for(k in 2:10){
+  set.seed(12345)
+  fit = kmeans(data2, k, nstart=100)
+  F[k-1] = (fit$betweenss/(k-1))/(fit$tot.withinss/(nrow(data2)-k))
+  sse[k-1] = fit$tot.withinss
+  rsq[k-1] = fit$betweenss/fit$totss
+  plot(fit)
+}
+plot(2:10, sse, type="b")
+plot(2:10, F, type="b")
+plot(2:10, rsq, type = "b")
+
+```
+
+```{r}
+library(e1071)
+svm <- svm(signs_of_mental_illness~., data=data)
+summary(svm)
+```
+```{r}
+fit <-glm(signs_of_mental_illness~.,newdata, family = binomial)
+summary(fit)
+```
+```{r}
+library(caret)
+pvals <- seq(0,1,0.01)
+maxCCR <- 0
+p.opt <- 0
+for (p in pvals){
+  pred <- rep(0, nrow(newdata))
+  pred[fit$fitted.values>p] = 1
+  matrix <- confusionMatrix(factor(pred, levels = c(0,1)), as.factor(as.numeric(newdata$signs_of_mental_illness)))
+  if(matrix$overall[1]>maxCCR){
+    maxCCR<-matrix$overall[1]
+    p.opt <- p
+  }
+  
+}
+
+p.opt
+ pred <- rep(0, nrow(data))
+pred[fit$fitted.values>p.opt] = 1
+matrix <- confusionMatrix(factor(pred, levels = c(0,1)), as.factor(as.numeric(data$signs_of_mental_illness)))
+matrix
+```
+
